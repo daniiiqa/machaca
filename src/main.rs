@@ -14,7 +14,8 @@
 //!   clic en ‹ › o la rueda del mouse también cambian el valor
 //!   `machaca` otra vez (o clic fuera) cierra
 //!
-//! Lo que se lee y se cambia lo hace `QuickSettings.sh estado|hacer|menu`:
+//! Los submenús son páginas del panel (QuickSettings.sh pagina NOMBRE).
+//! Lo que se lee y se cambia lo hace `QuickSettings.sh estado|pagina|hacer`:
 //! machaca solo es la cara. Colores, fuente y bordes salen del look (disco).
 
 mod app;

@@ -1,9 +1,10 @@
 //! El panel en celdas (como rola o vato), que disco pinta en pixeles: arriba
 //! el wallpaper y el look de ahora, abajo dos columnas (Apariencia; Sistema y
-//! Tus compus) y la fila de herramientas. También la página de looks.
+//! Tus compus) y la fila de herramientas. También las páginas: la de looks y
+//! las de cada submenú (visualizador, grabador, teclado…), que antes eran jale.
 //! Junto con las celdas sale dónde cae cada cosa, para el mouse.
 
-use crate::estado::{Estado, LookInfo, Renglon, Seccion, Tipo, columnas, herramientas};
+use crate::estado::{Entrada, Estado, LookInfo, Renglon, Seccion, Sub, Tipo, columnas, herramientas};
 use disco::look::Look;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -18,6 +19,8 @@ const HEAD: u16 = 6;
 pub const THUMB_W: u16 = 26;
 const COL_W: u16 = (W - 6) / 2;
 const COL_X: [u16; 2] = [2, 2 + COL_W + 2];
+/// Ancho de una página a una sola columna.
+const FULL_W: u16 = W - 4;
 /// Renglones de la página de looks por columna.
 const LOOKS_ROWS: usize = 9;
 
@@ -31,13 +34,23 @@ pub enum Zona {
 pub enum Pagina {
     Panel,
     Looks,
+    Sub,
+}
+
+/// Un renglón: del panel (columna, índice) o de la página abierta (índice).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Donde {
+    Panel(usize, usize),
+    Sub(usize),
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Hit {
-    Renglon(usize, usize),
-    Menos(usize, usize),
-    Mas(usize, usize),
+    Renglon(Donde),
+    Menos(Donde),
+    Mas(Donde),
+    /// un botón (entrada, cuál)
+    Boton(usize, usize),
     Herr(usize),
     Look(usize),
     Volver,
@@ -55,6 +68,11 @@ pub struct Ui {
     pub zona: Zona,
     pub idx: usize,
     pub look_idx: usize,
+    /// la página de un submenú, y el renglón elegido en ella
+    pub sub: Option<Sub>,
+    pub sub_idx: usize,
+    /// en un renglón de botones: cuál está marcado
+    pub boton: usize,
     /// cambiando el valor del renglón elegido con ←→ (se entra con Enter)
     pub editando: bool,
 }
@@ -68,14 +86,29 @@ fn alto_columna(secs: &[Seccion]) -> u16 {
     secs.iter().map(|s| s.renglones.len() as u16 + 2).sum::<u16>().saturating_sub(1)
 }
 
-/// El alto del cuerpo (lo mismo en las dos páginas, para que el panel no brinque).
+/// El alto del cuerpo (lo mismo en todas las páginas, para que el panel no brinque).
 fn alto_cuerpo(cols: &[Vec<Seccion>; 2]) -> u16 {
     alto_columna(&cols[0]).max(alto_columna(&cols[1])).max(LOOKS_ROWS as u16 + 2)
 }
 
 pub fn alto(e: &Estado) -> u16 {
-    // borde, cabecera, línea, cuerpo, aire, herramientas, borde
+    // borde, cabecera, línea, aire, cuerpo, aire, herramientas, borde
     1 + HEAD + 1 + 1 + alto_cuerpo(&columnas(e)) + 1 + 1 + 1
+}
+
+/// Cuántos renglones caben en una columna de una página (debajo del título).
+pub fn renglones_pagina(e: &Estado) -> usize {
+    (alto_cuerpo(&columnas(e)) - 1) as usize
+}
+
+/// ¿La página va a dos columnas? (si no cabe en una)
+pub fn dos_columnas(sub: &Sub, filas: usize) -> bool {
+    alto_entradas(&sub.entradas, false) > filas
+}
+
+/// Renglones que ocupan las entradas (los botones, a media columna, van en dos).
+fn alto_entradas(es: &[Entrada], angosto: bool) -> usize {
+    es.iter().map(|e| if angosto && matches!(e, Entrada::Botones { opts, .. } if opts.len() > 1) { 2 } else { 1 }).sum()
 }
 
 fn trunc(s: &str, w: usize) -> String {
@@ -99,6 +132,16 @@ impl Ui {
         if self.estado.es() { a } else { b }
     }
 
+    fn ayuda(&self) -> &str {
+        if self.editando {
+            return self.l("←→ cambiar el valor · Enter o Esc listo", "←→ change the value · Enter or Esc done");
+        }
+        match self.pagina {
+            Pagina::Panel => self.l("↑↓←→ elegir · Enter abrir o cambiar · Esc cerrar", "↑↓←→ move · Enter open or change · Esc close"),
+            _ => self.l("↑↓←→ elegir · Enter abrir o cambiar · Esc volver", "↑↓←→ move · Enter open or change · Esc back"),
+        }
+    }
+
     /// Las celdas, las zonas para el mouse y dónde va la miniatura.
     pub fn render(&self, look: &Look) -> (Buffer, Vec<Area>, Rect) {
         let t = look.theme;
@@ -106,22 +149,11 @@ impl Ui {
         let h = alto(&self.estado);
         let area = Rect::new(0, 0, W, h);
         let mut buf = Buffer::empty(area);
-        let base = Style::new().bg(t.base).fg(t.fg);
-        buf.set_style(area, base);
+        buf.set_style(area, Style::new().bg(t.base).fg(t.fg));
         let maquina = self.estado.get("maquina").unwrap_or("discada").to_string();
         look.block(false)
             .title(format!(" discada · {maquina} ").fg(t.muted))
-            .title_bottom(
-                format!(
-                    " {} ",
-                    if self.editando {
-                        self.l("←→ cambiar el valor · Enter o Esc listo", "←→ change the value · Enter or Esc done")
-                    } else {
-                        self.l("↑↓←→ elegir · Enter abrir o cambiar · Esc cerrar", "↑↓←→ move · Enter open or change · Esc close")
-                    }
-                )
-                .fg(if self.editando { t.accent } else { t.muted }),
-            )
+            .title_bottom(format!(" {} ", self.ayuda()).fg(if self.editando { t.accent } else { t.muted }))
             .render(area, &mut buf);
         let mut areas = Vec::new();
         let muted = Style::new().fg(t.muted);
@@ -148,22 +180,20 @@ impl Ui {
         let cambiar = format!("{} ›", self.l("cambiar", "change"));
         let cx = W - 3 - cambiar.chars().count() as u16;
         put(&mut buf, cx, 3, &cambiar, Style::new().fg(t.accent));
-        areas.push(Area { r: Rect::new(cx, 3, cambiar.chars().count() as u16, 1), hit: Hit::Renglon(0, 0) });
+        areas.push(Area { r: Rect::new(cx, 3, cambiar.chars().count() as u16, 1), hit: Hit::Renglon(Donde::Panel(0, 0)) });
 
         // la línea bajo la cabecera, unida al borde si el look tiene
         let set = look.border_set();
         let y_line = 1 + HEAD;
         let bst = Style::new().fg(t.border);
-        if set.vertical_left.trim().is_empty() {
-            buf.set_string(1, y_line, set.horizontal_top.repeat((W - 2) as usize), bst);
-        } else {
+        buf.set_string(1, y_line, set.horizontal_top.repeat((W - 2) as usize), bst);
+        if !set.vertical_left.trim().is_empty() {
             let (izq, der) = match set.vertical_left {
                 "┃" => ("┣", "┫"),
                 "║" => ("╠", "╣"),
                 _ => ("├", "┤"),
             };
             buf.set_string(0, y_line, izq, bst);
-            buf.set_string(1, y_line, set.horizontal_top.repeat((W - 2) as usize), bst);
             buf.set_string(W - 1, y_line, der, bst);
         }
 
@@ -171,6 +201,7 @@ impl Ui {
         match self.pagina {
             Pagina::Panel => self.cuerpo(&mut buf, &mut areas, look, &cols, y_body),
             Pagina::Looks => self.pagina_looks(&mut buf, &mut areas, look, y_body),
+            Pagina::Sub => self.pagina_sub(&mut buf, &mut areas, look, y_body),
         }
 
         // ── herramientas ──
@@ -188,6 +219,19 @@ impl Ui {
         (buf, areas, thumb)
     }
 
+    fn titulo(&self, buf: &mut Buffer, areas: &mut Vec<Area>, look: &Look, y: u16, titulo: &str, nota: &str) {
+        let t = look.theme;
+        let nx = put(buf, COL_X[0], y, &titulo.to_uppercase(), Style::new().fg(t.accent).add_modifier(Modifier::BOLD));
+        let volver = format!("‹ {}", self.l("volver", "back"));
+        let vw = volver.chars().count() as u16;
+        let vx = W - 3 - vw;
+        if !nota.is_empty() {
+            put(buf, nx + 3, y, &trunc(nota, vx.saturating_sub(nx + 5) as usize), Style::new().fg(t.muted));
+        }
+        put(buf, vx, y, &volver, Style::new().fg(t.muted));
+        areas.push(Area { r: Rect::new(vx, y, vw, 1), hit: Hit::Volver });
+    }
+
     fn cuerpo(&self, buf: &mut Buffer, areas: &mut Vec<Area>, look: &Look, cols: &[Vec<Seccion>; 2], y0: u16) {
         let t = look.theme;
         for (c, secs) in cols.iter().enumerate() {
@@ -202,7 +246,7 @@ impl Ui {
                 y += 1;
                 for r in &s.renglones {
                     let elegido = self.zona == Zona::Col(c) && self.idx == i;
-                    self.renglon(buf, areas, look, r, c, i, x0, y, elegido);
+                    self.renglon(buf, areas, look, r, Donde::Panel(c, i), x0, y, COL_W, elegido);
                     y += 1;
                     i += 1;
                 }
@@ -210,11 +254,12 @@ impl Ui {
         }
     }
 
+    /// Un renglón (opción, barra, interruptor o algo que se abre) de `w` celdas.
     #[allow(clippy::too_many_arguments)]
-    fn renglon(&self, buf: &mut Buffer, areas: &mut Vec<Area>, look: &Look, r: &Renglon, c: usize, i: usize, x0: u16, y: u16, elegido: bool) {
+    fn renglon(&self, buf: &mut Buffer, areas: &mut Vec<Area>, look: &Look, r: &Renglon, donde: Donde, x0: u16, y: u16, w: u16, elegido: bool) {
         let t = look.theme;
         let (sel_st, marca) = look.sel(true);
-        let fila = Rect::new(x0, y, COL_W, 1);
+        let fila = Rect::new(x0, y, w, 1);
         let mut nombre_st = Style::new().fg(t.fg);
         if elegido {
             buf.set_style(fila, sel_st);
@@ -222,25 +267,22 @@ impl Ui {
             put(buf, x0, y, marca, sel_st);
         }
         put(buf, x0 + 2, y, &look.tx(&r.nombre), nombre_st);
-        areas.push(Area { r: fila, hit: Hit::Renglon(c, i) });
-        let fin = x0 + COL_W - 1;
+        areas.push(Area { r: fila, hit: Hit::Renglon(donde) });
+        let fin = x0 + w - 1;
         let editando = elegido && self.editando;
-        // editando: el valor al revés de la selección (oscuro si la selección es clara
-        // y al revés), así se nota en todos los looks
-        let negativo = if matches!(sel_st.bg, Some(c) if c == t.fg || c == t.primary) { Style::new().bg(t.base).fg(t.fg) } else { Style::new().bg(t.fg).fg(t.base) };
-        let val_st = if editando { negativo.add_modifier(Modifier::BOLD) } else if elegido { sel_st } else { Style::new().fg(t.fg) };
+        let val_st = if editando { negativo(look).add_modifier(Modifier::BOLD) } else if elegido { sel_st } else { Style::new().fg(t.fg) };
         let flecha = if editando { sel_st.add_modifier(Modifier::BOLD) } else { Style::new().fg(if elegido { t.accent } else { t.muted }) };
         let (izq, der) = if editando { ("◂", "▸") } else { ("‹", "›") };
         match &r.tipo {
             Tipo::Opcion { opts, cur } => {
-                let txt = trunc(&opts.get(*cur).map(|o| o.1.clone()).unwrap_or_default(), (COL_W / 2) as usize);
-                let w = txt.chars().count() as u16;
-                let xs = fin - w - 3;
+                let txt = trunc(&opts.get(*cur).map(|o| o.1.clone()).unwrap_or_default(), (w / 2) as usize);
+                let tw = txt.chars().count() as u16;
+                let xs = fin - tw - 3;
                 put(buf, xs - 1, y, izq, flecha);
                 put(buf, xs, y, &format!(" {txt} "), val_st);
                 put(buf, fin - 1, y, der, flecha);
-                areas.push(Area { r: Rect::new(xs - 2, y, 3, 1), hit: Hit::Menos(c, i) });
-                areas.push(Area { r: Rect::new(fin - 2, y, 3, 1), hit: Hit::Mas(c, i) });
+                areas.push(Area { r: Rect::new(xs - 2, y, 3, 1), hit: Hit::Menos(donde) });
+                areas.push(Area { r: Rect::new(fin - 2, y, 3, 1), hit: Hit::Mas(donde) });
             }
             Tipo::Barra { min, max, cur } => {
                 let frac = (*cur - *min) as f64 / (*max - *min).max(1) as f64;
@@ -252,8 +294,8 @@ impl Ui {
                 put(buf, nx, y, &resto, Style::new().fg(t.border));
                 put(buf, xs + 11, y, &format!(" {num:>2} "), val_st);
                 put(buf, fin - 1, y, der, flecha);
-                areas.push(Area { r: Rect::new(xs - 2, y, 3, 1), hit: Hit::Menos(c, i) });
-                areas.push(Area { r: Rect::new(fin - 2, y, 3, 1), hit: Hit::Mas(c, i) });
+                areas.push(Area { r: Rect::new(xs - 2, y, 3, 1), hit: Hit::Menos(donde) });
+                areas.push(Area { r: Rect::new(fin - 2, y, 3, 1), hit: Hit::Mas(donde) });
             }
             Tipo::Interruptor(on) => {
                 let (txt, st) = if *on {
@@ -261,13 +303,15 @@ impl Ui {
                 } else {
                     (format!("○ {}", self.l("no", "off")), Style::new().fg(t.muted))
                 };
-                let w = txt.chars().count() as u16;
-                put(buf, fin - w, y, &txt, if elegido { sel_st } else { st });
+                let tw = txt.chars().count() as u16;
+                put(buf, fin - tw, y, &txt, if elegido { sel_st } else { st });
             }
             Tipo::Abre(_) => {
-                let txt = trunc(&r.valor, (COL_W / 2) as usize);
-                let w = txt.chars().count() as u16;
-                put(buf, fin - w - 2, y, &txt, if elegido { sel_st } else { Style::new().fg(t.muted) });
+                // lo que deje el nombre (que no se le encime)
+                let libre = (w as usize).saturating_sub(r.nombre.chars().count() + 7).min((w / 2) as usize);
+                let txt = trunc(&r.valor, libre);
+                let tw = txt.chars().count() as u16;
+                put(buf, fin - tw - 2, y, &txt, if elegido { sel_st } else { Style::new().fg(t.muted) });
                 put(buf, fin - 1, y, "›", flecha);
             }
         }
@@ -275,11 +319,7 @@ impl Ui {
 
     fn pagina_looks(&self, buf: &mut Buffer, areas: &mut Vec<Area>, look: &Look, y0: u16) {
         let t = look.theme;
-        put(buf, COL_X[0], y0, "LOOKS", Style::new().fg(t.accent).add_modifier(Modifier::BOLD));
-        let volver = format!("‹ {}", self.l("volver", "back"));
-        let vx = W - 3 - volver.chars().count() as u16;
-        put(buf, vx, y0, &volver, Style::new().fg(t.muted));
-        areas.push(Area { r: Rect::new(vx, y0, volver.chars().count() as u16, 1), hit: Hit::Volver });
+        self.titulo(buf, areas, look, y0, "looks", "");
         let actual = self.estado.get("look").unwrap_or("");
         let (sel_st, marca) = look.sel(true);
         for (i, l) in self.looks.iter().enumerate() {
@@ -312,4 +352,83 @@ impl Ui {
             areas.push(Area { r: fila, hit: Hit::Look(i) });
         }
     }
+
+    /// La página de un submenú: a una columna si cabe, si no a dos.
+    fn pagina_sub(&self, buf: &mut Buffer, areas: &mut Vec<Area>, look: &Look, y0: u16) {
+        let Some(sub) = &self.sub else { return };
+        self.titulo(buf, areas, look, y0, &sub.titulo, &sub.nota);
+        let filas = renglones_pagina(&self.estado);
+        let dos = dos_columnas(sub, filas);
+        let w = if dos { COL_W } else { FULL_W };
+        let (mut c, mut y) = (0usize, y0 + 1);
+        for (i, e) in sub.entradas.iter().enumerate() {
+            let alto = alto_entradas(std::slice::from_ref(e), dos) as u16;
+            if dos && c == 0 && y + alto > y0 + 1 + filas as u16 {
+                c = 1;
+                y = y0 + 1;
+            }
+            self.entrada(buf, areas, look, e, i, COL_X[c], y, w);
+            y += alto;
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn entrada(&self, buf: &mut Buffer, areas: &mut Vec<Area>, look: &Look, e: &Entrada, i: usize, x0: u16, y: u16, w: u16) {
+        let t = look.theme;
+        let elegido = i == self.sub_idx;
+        let (sel_st, marca) = look.sel(true);
+        match e {
+            Entrada::R(r) => self.renglon(buf, areas, look, r, Donde::Sub(i), x0, y, w, elegido),
+            Entrada::Elige { etiqueta, actual, .. } => {
+                let fila = Rect::new(x0, y, w, 1);
+                let mut st = Style::new().fg(t.fg);
+                if elegido {
+                    buf.set_style(fila, sel_st);
+                    st = sel_st;
+                    put(buf, x0, y, marca, sel_st);
+                }
+                let (bola, bst) = if *actual { ("●", Style::new().fg(t.primary).add_modifier(Modifier::BOLD)) } else { ("○", Style::new().fg(t.muted)) };
+                put(buf, x0 + 2, y, bola, if elegido { sel_st } else { bst });
+                put(buf, x0 + 4, y, &trunc(etiqueta, (w - 5) as usize), if *actual && !elegido { st.add_modifier(Modifier::BOLD) } else { st });
+                areas.push(Area { r: fila, hit: Hit::Renglon(Donde::Sub(i)) });
+            }
+            Entrada::Botones { nombre, opts, .. } => {
+                let un_boton = opts.len() == 1;
+                let fila = Rect::new(x0, y, w, 1);
+                let mut st = Style::new().fg(t.fg);
+                if elegido {
+                    buf.set_style(fila, sel_st);
+                    st = sel_st;
+                    put(buf, x0, y, marca, sel_st);
+                }
+                areas.push(Area { r: fila, hit: Hit::Renglon(Donde::Sub(i)) });
+                if un_boton {
+                    put(buf, x0 + 2, y, &look.tx(nombre), st);
+                    put(buf, x0 + w - 2, y, "›", Style::new().fg(if elegido { t.accent } else { t.muted }));
+                    return;
+                }
+                put(buf, x0 + 2, y, &look.tx(nombre), st);
+                // los botones a la derecha, o abajo si no caben
+                let total: u16 = opts.iter().map(|(_, l)| l.chars().count() as u16 + 3).sum();
+                let (mut bx, by) = if total + 4 + nombre.chars().count() as u16 <= w { (x0 + w - total, y) } else { (x0 + 4, y + 1) };
+                for (k, (_, lab)) in opts.iter().enumerate() {
+                    let txt = format!(" {lab} ");
+                    let tw = txt.chars().count() as u16;
+                    let marcado = elegido && self.editando && k == self.boton;
+                    let bst = if marcado { negativo(look).add_modifier(Modifier::BOLD) } else { Style::new().fg(t.fg).bg(t.hl) };
+                    put(buf, bx, by, &txt, bst);
+                    areas.push(Area { r: Rect::new(bx, by, tw, 1), hit: Hit::Boton(i, k) });
+                    bx += tw + 1;
+                }
+            }
+        }
+    }
+}
+
+/// El valor que se edita va al revés de la selección (oscuro si la selección
+/// es clara y al revés), así se nota en todos los looks.
+fn negativo(look: &Look) -> Style {
+    let t = look.theme;
+    let (sel_st, _) = look.sel(true);
+    if matches!(sel_st.bg, Some(c) if c == t.fg || c == t.primary) { Style::new().bg(t.base).fg(t.fg) } else { Style::new().bg(t.fg).fg(t.base) }
 }

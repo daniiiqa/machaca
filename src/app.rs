@@ -2,8 +2,8 @@
 //! oscurece un poco la pantalla y pone el panel al centro. Lo que se cambia
 //! va a `QuickSettings.sh hacer …`; lo que se abre cierra el panel primero.
 
-use crate::estado::{self, Abre, Estado, Tipo, columnas, herramientas, looks};
-use crate::ui::{self, Hit, Pagina, Ui, Zona, renglones};
+use crate::estado::{self, Abre, Entrada, Estado, Renglon, Sub, Tipo, columnas, herramientas, looks};
+use crate::ui::{self, Donde, Hit, Pagina, Ui, Zona, renglones};
 use disco::look::Look;
 use disco::paint::Painter;
 use smithay_client_toolkit::reexports::calloop::EventLoop;
@@ -87,7 +87,9 @@ struct App {
     dirty: bool,
     fase: Fase,
     cambiado: Option<Instant>,
-    barra: Option<(&'static str, i32, Instant)>,
+    barra: Option<(String, i32, Instant)>,
+    /// releer la página abierta (después de cambiar algo en ella)
+    recargar: Option<Instant>,
     /// lo que se lanza al cerrar (ya sin el panel en pantalla)
     luego: Option<Vec<String>>,
     exit: bool,
@@ -138,58 +140,163 @@ impl App {
                 self.ui.pagina = Pagina::Looks;
                 let actual = self.ui.estado.get("look").unwrap_or("").to_string();
                 self.ui.look_idx = self.ui.looks.iter().position(|l| l.nombre == actual).unwrap_or(0);
+                self.ui.editando = false;
                 self.redraw();
             }
             Abre::Hacer(x) => self.cerrar_y(qs(&["hacer", x])),
-            Abre::Menu(x) => self.cerrar_y(qs(&["menu", x])),
+            Abre::Pagina(x) => {
+                self.ui.sub = Some(Sub::leer(x));
+                self.ui.pagina = Pagina::Sub;
+                self.ui.sub_idx = 0;
+                self.ui.editando = false;
+                self.redraw();
+            }
         }
     }
 
-    /// Mueve una opción o la barra `d` pasos (o prende/apaga un interruptor).
-    fn cambiar(&mut self, c: usize, i: usize, d: i32) {
-        let cols = columnas(&self.ui.estado);
-        let Some(r) = renglones(&cols, c).get(i).map(|r| (*r).clone()) else { return };
+    fn volver(&mut self) {
+        self.ui.pagina = Pagina::Panel;
+        self.ui.sub = None;
+        self.ui.editando = false;
+        self.redraw();
+    }
+
+    /// El renglón elegido ahora (en el panel o en la página abierta).
+    fn donde_sel(&self) -> Option<Donde> {
+        match (self.ui.pagina, self.ui.zona) {
+            (Pagina::Panel, Zona::Col(c)) => Some(Donde::Panel(c, self.ui.idx)),
+            (Pagina::Sub, _) => Some(Donde::Sub(self.ui.sub_idx)),
+            _ => None,
+        }
+    }
+
+    fn entrada(&self, i: usize) -> Option<&Entrada> {
+        self.ui.sub.as_ref()?.entradas.get(i)
+    }
+
+    /// El renglón en `donde` (una copia), si es opción, barra, interruptor o abre.
+    fn renglon(&self, donde: Donde) -> Option<Renglon> {
+        match donde {
+            Donde::Panel(c, i) => renglones(&columnas(&self.ui.estado), c).get(i).map(|r| (*r).clone()),
+            Donde::Sub(i) => match self.entrada(i)? {
+                Entrada::R(r) => Some(r.clone()),
+                _ => None,
+            },
+        }
+    }
+
+    /// ¿Se edita con ←→? (opciones, la barra, y los botones de una página)
+    fn editable(&self, donde: Donde) -> bool {
+        if let Donde::Sub(i) = donde
+            && let Some(Entrada::Botones { opts, .. }) = self.entrada(i)
+        {
+            return opts.len() > 1;
+        }
+        self.renglon(donde).is_some_and(|r| matches!(r.tipo, Tipo::Opcion { .. } | Tipo::Barra { .. }))
+    }
+
+    /// `hacer …` suelto; en una página, releerla al ratito (ya con lo aplicado).
+    fn hacer(&mut self, donde: Donde, args: &[&str]) {
+        let mut a = vec!["hacer"];
+        a.extend_from_slice(args);
+        lanza(&qs(&a));
+        if matches!(donde, Donde::Sub(_)) {
+            self.recargar = Some(Instant::now());
+        }
+    }
+
+    /// Mueve una opción o la barra `d` pasos, prende/apaga un interruptor, o
+    /// mueve cuál botón está marcado.
+    fn cambiar(&mut self, donde: Donde, d: i32) {
+        if let Donde::Sub(i) = donde
+            && let Some(Entrada::Botones { opts, .. }) = self.entrada(i)
+        {
+            let n = opts.len().max(1) as i32;
+            self.ui.boton = (self.ui.boton as i32 + d).rem_euclid(n) as usize;
+            return self.redraw();
+        }
+        let Some(r) = self.renglon(donde) else { return };
         match &r.tipo {
             Tipo::Opcion { opts, cur } => {
                 let n = opts.len() as i32;
                 if n == 0 {
                     return;
                 }
-                let nuevo = (*cur as i32 + d).rem_euclid(n) as usize;
-                let v = opts[nuevo].0.clone();
-                self.poner(r.clave, &v);
-                lanza(&qs(&["hacer", r.clave, &v]));
+                let v = opts[(*cur as i32 + d).rem_euclid(n) as usize].0.clone();
+                self.poner(donde, &r.clave, &v);
+                self.hacer(donde, &[&r.clave, &v]);
             }
             Tipo::Barra { min, max, cur } => {
                 let nuevo = (*cur + d).clamp(*min, *max);
                 if nuevo != *cur {
-                    self.poner(r.clave, &nuevo.to_string());
-                    self.barra = Some((r.clave, nuevo, Instant::now()));
+                    self.poner(donde, &r.clave, &nuevo.to_string());
+                    self.barra = Some((r.clave.clone(), nuevo, Instant::now()));
                 }
             }
             Tipo::Interruptor(on) => {
-                self.poner(r.clave, if *on { "no" } else { "yes" });
-                lanza(&qs(&["hacer", r.clave]));
+                self.poner(donde, &r.clave, if *on { "no" } else { "yes" });
+                self.hacer(donde, &[&r.clave]);
             }
             Tipo::Abre(_) => {}
         }
         self.redraw();
     }
 
-    fn activar(&mut self, c: usize, i: usize) {
-        let cols = columnas(&self.ui.estado);
-        let Some(r) = renglones(&cols, c).get(i).map(|r| (*r).clone()) else { return };
+    fn activar(&mut self, donde: Donde) {
+        if let Donde::Sub(i) = donde {
+            match self.entrada(i).cloned() {
+                Some(Entrada::Elige { clave, v, .. }) => {
+                    if let Some(s) = self.ui.sub.as_mut() {
+                        for e in &mut s.entradas {
+                            if let Entrada::Elige { clave: k, v: vv, actual, .. } = e
+                                && *k == clave
+                            {
+                                *actual = *vv == v;
+                            }
+                        }
+                    }
+                    self.hacer(donde, &[&clave, &v]);
+                    return self.redraw();
+                }
+                Some(Entrada::Botones { clave, opts, .. }) => {
+                    let k = if opts.len() == 1 { 0 } else { self.ui.boton };
+                    if let Some((v, _)) = opts.get(k) {
+                        self.hacer(donde, &[&clave, v]);
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
+        let Some(r) = self.renglon(donde) else { return };
         match &r.tipo {
             Tipo::Abre(a) => self.abrir(a),
-            _ => self.cambiar(c, i, 1),
+            _ => self.cambiar(donde, 1),
         }
     }
 
     /// El valor nuevo, ya en pantalla (sin esperar a que el script lo aplique).
-    fn poner(&mut self, clave: &str, v: &str) {
-        let lab = self.ui.estado.opciones.get(clave).and_then(|o| o.iter().find(|(x, _)| x == v)).map(|(_, l)| l.clone()).unwrap_or_else(|| v.to_string());
-        self.ui.estado.v.insert(clave.to_string(), (v.to_string(), lab));
-        self.cambiado = Some(Instant::now());
+    fn poner(&mut self, donde: Donde, clave: &str, v: &str) {
+        match donde {
+            Donde::Panel(..) => {
+                let lab = self.ui.estado.opciones.get(clave).and_then(|o| o.iter().find(|(x, _)| x == v)).map(|(_, l)| l.clone()).unwrap_or_else(|| v.to_string());
+                self.ui.estado.v.insert(clave.to_string(), (v.to_string(), lab));
+                self.cambiado = Some(Instant::now());
+            }
+            Donde::Sub(i) => {
+                if let Some(Entrada::R(r)) = self.ui.sub.as_mut().and_then(|s| s.entradas.get_mut(i)) {
+                    match &mut r.tipo {
+                        Tipo::Opcion { opts, cur } => {
+                            if let Some(p) = opts.iter().position(|(o, _)| o == v) {
+                                *cur = p;
+                            }
+                        }
+                        Tipo::Interruptor(on) => *on = v == "yes",
+                        _ => {}
+                    }
+                }
+            }
+        }
     }
 
     fn herramienta(&mut self, i: usize) {
@@ -202,9 +309,7 @@ impl App {
     fn aplicar_look(&mut self, i: usize) {
         let Some(l) = self.ui.looks.get(i) else { return };
         if Some(l.nombre.as_str()) == self.ui.estado.get("look") {
-            self.ui.pagina = Pagina::Panel;
-            self.redraw();
-            return;
+            return self.volver();
         }
         let s = estado::scripts().join("LookSwitch.sh").to_string_lossy().into_owned();
         self.cerrar_y(vec![s, l.nombre.clone()]);
@@ -242,27 +347,33 @@ impl App {
             Zona::Herr => herramientas(&self.ui.estado).len(),
         };
         self.ui.idx = self.ui.idx.min(n.saturating_sub(1));
+        if let Some(s) = &self.ui.sub {
+            self.ui.sub_idx = self.ui.sub_idx.min(s.entradas.len().saturating_sub(1));
+        }
     }
 
     // ─── teclado ────────────────────────────────────────────────────────────
 
     fn key(&mut self, k: Keysym) {
-        if self.ui.pagina == Pagina::Looks {
-            return self.key_looks(k);
-        }
-        let cols = columnas(&self.ui.estado);
-        let n_col = |c: usize| renglones(&cols, c).len();
-        let n_herr = herramientas(&self.ui.estado).len();
-        let (zona, idx) = (self.ui.zona, self.ui.idx);
-        // editando un valor: ←→ lo cambian; Enter o Esc terminan; ↑↓ terminan y siguen
-        if self.ui.editando {
+        // editando un valor: ←→ lo cambian; Enter o Esc terminan (en los botones,
+        // Enter aplica el marcado); ↑↓ terminan y siguen
+        if self.ui.editando
+            && let Some(d) = self.donde_sel()
+        {
             match k {
                 Keysym::Left | Keysym::h | Keysym::Right | Keysym::l => {
-                    if let Zona::Col(c) = zona {
-                        return self.cambiar(c, idx, if matches!(k, Keysym::Left | Keysym::h) { -1 } else { 1 });
-                    }
+                    return self.cambiar(d, if matches!(k, Keysym::Left | Keysym::h) { -1 } else { 1 });
                 }
-                Keysym::Escape | Keysym::Return | Keysym::KP_Enter | Keysym::space => {
+                Keysym::Return | Keysym::KP_Enter | Keysym::space => {
+                    if let Donde::Sub(i) = d
+                        && matches!(self.entrada(i), Some(Entrada::Botones { .. }))
+                    {
+                        self.activar(d);
+                    }
+                    self.ui.editando = false;
+                    return self.redraw();
+                }
+                Keysym::Escape | Keysym::BackSpace => {
                     self.ui.editando = false;
                     return self.redraw();
                 }
@@ -270,20 +381,27 @@ impl App {
                 _ => return,
             }
         }
+        match self.ui.pagina {
+            Pagina::Looks => self.key_looks(k),
+            Pagina::Sub => self.key_sub(k),
+            Pagina::Panel => self.key_panel(k),
+        }
+    }
+
+    fn key_panel(&mut self, k: Keysym) {
+        let cols = columnas(&self.ui.estado);
+        let n_col = |c: usize| renglones(&cols, c).len();
+        let n_herr = herramientas(&self.ui.estado).len();
+        let (zona, idx) = (self.ui.zona, self.ui.idx);
         match k {
             Keysym::Escape => return self.cerrar(),
             Keysym::Return | Keysym::KP_Enter | Keysym::space => {
                 return match zona {
-                    Zona::Col(c) => {
-                        // las opciones y la barra se editan con ←→; lo demás se hace ya
-                        let editable = renglones(&cols, c).get(idx).is_some_and(|r| matches!(r.tipo, Tipo::Opcion { .. } | Tipo::Barra { .. }));
-                        if editable {
-                            self.ui.editando = true;
-                            self.redraw();
-                        } else {
-                            self.activar(c, idx);
-                        }
+                    Zona::Col(c) if self.editable(Donde::Panel(c, idx)) => {
+                        self.ui.editando = true;
+                        self.redraw();
                     }
+                    Zona::Col(c) => self.activar(Donde::Panel(c, idx)),
                     Zona::Herr => self.herramienta(idx),
                 };
             }
@@ -333,18 +451,44 @@ impl App {
         self.redraw();
     }
 
+    fn key_sub(&mut self, k: Keysym) {
+        let Some(sub) = &self.ui.sub else { return self.volver() };
+        let n = sub.entradas.len();
+        if n == 0 {
+            return self.volver();
+        }
+        // en dos columnas, dónde empieza la segunda
+        let filas = ui::renglones_pagina(&self.ui.estado);
+        let corte = if ui::dos_columnas(sub, filas) { corte(sub, filas) } else { n };
+        let i = self.ui.sub_idx;
+        self.ui.sub_idx = match k {
+            Keysym::Escape | Keysym::BackSpace => return self.volver(),
+            Keysym::Return | Keysym::KP_Enter | Keysym::space => {
+                let d = Donde::Sub(i);
+                if self.editable(d) {
+                    self.ui.editando = true;
+                    self.ui.boton = 0;
+                    return self.redraw();
+                }
+                return self.activar(d);
+            }
+            Keysym::Down | Keysym::j => (i + 1) % n,
+            Keysym::Up | Keysym::k => (i + n - 1) % n,
+            Keysym::Right | Keysym::l | Keysym::Tab if i < corte && corte < n => (i + corte).min(n - 1),
+            Keysym::Left | Keysym::h if i >= corte => i - corte,
+            _ => return,
+        };
+        self.redraw();
+    }
+
     fn key_looks(&mut self, k: Keysym) {
         let n = self.ui.looks.len();
         if n == 0 {
-            self.ui.pagina = Pagina::Panel;
-            return self.redraw();
+            return self.volver();
         }
         let i = self.ui.look_idx;
         self.ui.look_idx = match k {
-            Keysym::Escape | Keysym::BackSpace => {
-                self.ui.pagina = Pagina::Panel;
-                return self.redraw();
-            }
+            Keysym::Escape | Keysym::BackSpace => return self.volver(),
             Keysym::Return | Keysym::KP_Enter | Keysym::space => return self.aplicar_look(i),
             Keysym::Down | Keysym::j => (i + 1) % n,
             Keysym::Up | Keysym::k => (i + n - 1) % n,
@@ -363,12 +507,12 @@ impl App {
             return None;
         }
         let (cx, cy) = (((x - bx) / self.celda.0) as u16, ((y - by) / self.celda.1) as u16);
-        // las flechas antes que el renglón entero
+        // las flechas y los botones antes que el renglón entero
         let mut found = None;
         for a in &self.areas {
             if cx >= a.r.x && cx < a.r.right() && cy >= a.r.y && cy < a.r.bottom() {
                 match a.hit {
-                    Hit::Menos(..) | Hit::Mas(..) => return Some(a.hit),
+                    Hit::Menos(..) | Hit::Mas(..) | Hit::Boton(..) => return Some(a.hit),
                     h => found = found.or(Some(h)),
                 }
             }
@@ -382,20 +526,22 @@ impl App {
     }
 
     fn motion(&mut self, x: f32, y: f32) {
-        let antes = (self.ui.zona, self.ui.idx, self.ui.look_idx);
+        let antes = (self.ui.zona, self.ui.idx, self.ui.look_idx, self.ui.sub_idx);
+        let panel = self.ui.pagina == Pagina::Panel;
         match self.hit(x, y) {
-            Some(Hit::Renglon(c, i) | Hit::Menos(c, i) | Hit::Mas(c, i)) if self.ui.pagina == Pagina::Panel => {
+            Some(Hit::Renglon(Donde::Panel(c, i)) | Hit::Menos(Donde::Panel(c, i)) | Hit::Mas(Donde::Panel(c, i))) if panel => {
                 self.ui.zona = Zona::Col(c);
                 self.ui.idx = i;
             }
-            Some(Hit::Herr(i)) if self.ui.pagina == Pagina::Panel => {
+            Some(Hit::Renglon(Donde::Sub(i)) | Hit::Menos(Donde::Sub(i)) | Hit::Mas(Donde::Sub(i)) | Hit::Boton(i, _)) => self.ui.sub_idx = i,
+            Some(Hit::Herr(i)) if panel => {
                 self.ui.zona = Zona::Herr;
                 self.ui.idx = i;
             }
             Some(Hit::Look(i)) => self.ui.look_idx = i,
             _ => {}
         }
-        if antes != (self.ui.zona, self.ui.idx, self.ui.look_idx) {
+        if antes != (self.ui.zona, self.ui.idx, self.ui.look_idx, self.ui.sub_idx) {
             self.ui.editando = false;
             self.redraw();
         }
@@ -405,26 +551,34 @@ impl App {
         if !self.dentro(x, y) {
             return self.cerrar();
         }
+        let panel = self.ui.pagina == Pagina::Panel;
         match self.hit(x, y) {
-            Some(Hit::Renglon(0, 0)) if self.ui.pagina == Pagina::Panel => self.abrir(&Abre::Looks),
-            Some(Hit::Renglon(c, i)) if self.ui.pagina == Pagina::Panel => self.activar(c, i),
-            Some(Hit::Menos(c, i)) => self.cambiar(c, i, -1),
-            Some(Hit::Mas(c, i)) => self.cambiar(c, i, 1),
-            Some(Hit::Herr(i)) => self.herramienta(i),
-            Some(Hit::Look(i)) => self.aplicar_look(i),
-            Some(Hit::Volver) => {
-                self.ui.pagina = Pagina::Panel;
+            Some(Hit::Renglon(Donde::Panel(0, 0))) if panel => self.abrir(&Abre::Looks),
+            Some(Hit::Renglon(d @ Donde::Panel(..))) if panel => self.activar(d),
+            Some(Hit::Renglon(d @ Donde::Sub(i))) => {
+                // un renglón de varios botones: el clic va en el botón
+                if !matches!(self.entrada(i), Some(Entrada::Botones { opts, .. }) if opts.len() > 1) {
+                    self.activar(d);
+                }
+            }
+            Some(Hit::Menos(d)) => self.cambiar(d, -1),
+            Some(Hit::Mas(d)) => self.cambiar(d, 1),
+            Some(Hit::Boton(i, k)) => {
+                self.ui.boton = k;
+                self.activar(Donde::Sub(i));
                 self.redraw();
             }
+            Some(Hit::Herr(i)) => self.herramienta(i),
+            Some(Hit::Look(i)) => self.aplicar_look(i),
+            Some(Hit::Volver) => self.volver(),
             _ => {}
         }
     }
 
     fn rueda(&mut self, x: f32, y: f32, d: i32) {
-        if let Some(Hit::Renglon(c, i) | Hit::Menos(c, i) | Hit::Mas(c, i)) = self.hit(x, y)
-            && self.ui.pagina == Pagina::Panel
-        {
-            self.cambiar(c, i, d);
+        match self.hit(x, y) {
+            Some(Hit::Renglon(w) | Hit::Menos(w) | Hit::Mas(w)) if self.ui.pagina != Pagina::Looks && self.editable(w) => self.cambiar(w, d),
+            _ => {}
         }
     }
 
@@ -752,7 +906,7 @@ pub fn run(sigs: libc::sigset_t) -> Result<(), String> {
         keyboard: None,
         look: Look::load("machaca"),
         painter,
-        ui: Ui { estado: estado0, looks: looks0, pagina: Pagina::Panel, zona: Zona::Col(0), idx: 0, look_idx: 0, editando: false },
+        ui: Ui { estado: estado0, looks: looks0, pagina: Pagina::Panel, zona: Zona::Col(0), idx: 0, look_idx: 0, sub: None, sub_idx: 0, boton: 0, editando: false },
         miniatura: None,
         areas: Vec::new(),
         caja: (0.0, 0.0, 0.0, 0.0),
@@ -766,6 +920,7 @@ pub fn run(sigs: libc::sigset_t) -> Result<(), String> {
         fase: Fase::Abriendo(Instant::now()),
         cambiado: None,
         barra: None,
+        recargar: None,
         luego: None,
         exit: false,
     };
@@ -805,12 +960,23 @@ pub fn run(sigs: libc::sigset_t) -> Result<(), String> {
             }
         }
         // la barra se aplica cuando la dejas quieta
-        if let Some((clave, v, t)) = app.barra
-            && t.elapsed() >= BARRA
+        if app.barra.as_ref().is_some_and(|b| b.2.elapsed() >= BARRA)
+            && let Some((clave, v, _)) = app.barra.take()
         {
-            app.barra = None;
             app.cambiado = Some(Instant::now());
-            lanza(&qs(&["hacer", clave, &v.to_string()]));
+            lanza(&qs(&["hacer", &clave, &v.to_string()]));
+        }
+        // la página abierta, otra vez (ya con lo que se cambió)
+        if app.recargar.is_some_and(|t| t.elapsed() >= Duration::from_millis(500))
+            && let Some(nombre) = app.ui.sub.as_ref().map(|s| s.nombre.clone())
+        {
+            app.recargar = None;
+            let nueva = Sub::leer(&nombre);
+            if app.ui.sub.as_ref() != Some(&nueva) {
+                app.ui.sub = Some(nueva);
+                app.ajustar_sel();
+                app.redraw();
+            }
         }
         if app.look.refresh() {
             app.painter = Painter::new();
@@ -820,7 +986,7 @@ pub fn run(sigs: libc::sigset_t) -> Result<(), String> {
     app.layer = None;
     let _ = conn.flush();
     if let Some((clave, v, _)) = app.barra.take() {
-        lanza(&qs(&["hacer", clave, &v.to_string()]));
+        lanza(&qs(&["hacer", &clave, &v.to_string()]));
     }
     if let Some(args) = app.luego.take() {
         // que Hyprland alcance a quitar el panel antes (los menús y el
@@ -972,4 +1138,17 @@ fn blur_prendido() -> bool {
             .and_then(|o| String::from_utf8(o.stdout).ok())
             .is_some_and(|s| s.contains("\"bool\": true") || s.contains("\"int\": 1"))
     })
+}
+
+/// En una página a dos columnas: el índice de la primera entrada de la segunda.
+fn corte(sub: &Sub, filas: usize) -> usize {
+    let mut y = 0;
+    for (i, e) in sub.entradas.iter().enumerate() {
+        let alto = if matches!(e, Entrada::Botones { opts, .. } if opts.len() > 1) { 2 } else { 1 };
+        if y + alto > filas {
+            return i;
+        }
+        y += alto;
+    }
+    sub.entradas.len()
 }

@@ -130,15 +130,15 @@ pub enum Tipo {
 pub enum Abre {
     /// la página de looks, dentro del panel
     Looks,
-    /// `QuickSettings.sh hacer X`
-    Hacer(&'static str),
-    /// `QuickSettings.sh menu X` (un submenú de jale)
-    Menu(&'static str),
+    /// `QuickSettings.sh hacer X` (y el panel se cierra)
+    Hacer(String),
+    /// una página dentro del panel: `QuickSettings.sh pagina X`
+    Pagina(String),
 }
 
 #[derive(Clone, PartialEq)]
 pub struct Renglon {
-    pub clave: &'static str,
+    pub clave: String,
     pub nombre: String,
     pub tipo: Tipo,
     /// lo que se ve a la derecha si es un `Abre`
@@ -150,15 +150,15 @@ pub struct Seccion {
     pub renglones: Vec<Renglon>,
 }
 
-fn opcion(e: &Estado, clave: &'static str, nombre: String) -> Option<Renglon> {
+fn opcion(e: &Estado, clave: &str, nombre: String) -> Option<Renglon> {
     let opts = e.opciones.get(clave)?.clone();
     let v = e.get(clave)?;
     let cur = opts.iter().position(|(o, _)| o == v).unwrap_or(0);
-    Some(Renglon { clave, nombre, tipo: Tipo::Opcion { opts, cur }, valor: String::new() })
+    Some(Renglon { clave: clave.into(), nombre, tipo: Tipo::Opcion { opts, cur }, valor: String::new() })
 }
 
-fn abre(clave: &'static str, nombre: String, a: Abre, valor: impl Into<String>) -> Renglon {
-    Renglon { clave, nombre, tipo: Tipo::Abre(a), valor: valor.into() }
+fn abre(clave: &str, nombre: String, a: Abre, valor: impl Into<String>) -> Renglon {
+    Renglon { clave: clave.into(), nombre, tipo: Tipo::Abre(a), valor: valor.into() }
 }
 
 fn si(e: &Estado, k: &str) -> bool {
@@ -171,37 +171,37 @@ pub fn columnas(e: &Estado) -> [Vec<Seccion>; 2] {
     let l = |a: &str, b: &str| if es { a.to_string() } else { b.to_string() };
 
     let mut ap = vec![abre("look", "look".into(), Abre::Looks, e.get("look").unwrap_or("?"))];
-    ap.push(abre("wallpaper", "wallpaper".into(), Abre::Hacer("wallpaper"), l("elegir", "choose")));
+    ap.push(abre("wallpaper", "wallpaper".into(), Abre::Hacer("wallpaper".into()), l("elegir", "choose")));
     let font = e.get("font").and_then(|f| f.parse().ok()).unwrap_or(0);
-    ap.push(Renglon { clave: "font", nombre: l("tamaño de letra", "font size"), tipo: Tipo::Barra { min: -2, max: 4, cur: font }, valor: String::new() });
+    ap.push(Renglon { clave: "font".into(), nombre: l("tamaño de letra", "font size"), tipo: Tipo::Barra { min: -2, max: 4, cur: font }, valor: String::new() });
     ap.extend(opcion(e, "blur", "blur".into()));
     if e.get("shader").is_some() {
-        ap.push(Renglon { clave: "shader", nombre: "shader".into(), tipo: Tipo::Interruptor(si(e, "shader")), valor: String::new() });
+        ap.push(Renglon { clave: "shader".into(), nombre: "shader".into(), tipo: Tipo::Interruptor(si(e, "shader")), valor: String::new() });
     }
     ap.extend(opcion(e, "fetch", "cacha".into()));
-    ap.push(abre("vis", l("visualizador", "visualizer"), Abre::Menu("vis"), e.label("vis").unwrap_or("")));
+    ap.push(abre("vis", l("visualizador", "visualizer"), Abre::Pagina("vis".into()), e.label("vis").unwrap_or("")));
     ap.extend(opcion(e, "entrada", l("entrada", "entrance")));
 
     let mut sis = Vec::new();
     sis.extend(opcion(e, "lang", l("idioma", "language")));
     sis.extend(opcion(e, "notif", l("avisos", "notifications")));
     if e.get("dnd").is_some() {
-        sis.push(Renglon { clave: "dnd", nombre: l("no molestar", "do not disturb"), tipo: Tipo::Interruptor(si(e, "dnd")), valor: String::new() });
+        sis.push(Renglon { clave: "dnd".into(), nombre: l("no molestar", "do not disturb"), tipo: Tipo::Interruptor(si(e, "dnd")), valor: String::new() });
     }
-    sis.push(Renglon { clave: "game", nombre: "game mode".into(), tipo: Tipo::Interruptor(si(e, "game")), valor: String::new() });
+    sis.push(Renglon { clave: "game".into(), nombre: "game mode".into(), tipo: Tipo::Interruptor(si(e, "game")), valor: String::new() });
     if let Some(t) = e.label("teclado") {
-        sis.push(abre("teclado", l("teclado", "keyboard"), Abre::Menu("teclado"), t));
+        sis.push(abre("teclado", l("teclado", "keyboard"), Abre::Pagina("teclado".into()), t));
     }
     if let Some(b) = e.label("bateria") {
-        sis.push(abre("bateria", l("batería", "battery"), Abre::Menu("bateria"), b));
+        sis.push(abre("bateria", l("batería", "battery"), Abre::Pagina("bateria".into()), b));
     }
 
     let mut compus = Vec::new();
     if let Some(m) = e.label("machin") {
-        compus.push(abre("machin", "machín".to_string(), Abre::Hacer("machin"), m));
+        compus.push(abre("machin", "machín".to_string(), Abre::Hacer("machin".into()), m));
     }
     if e.get("picha").is_some() {
-        compus.push(abre("picha", "picha".into(), Abre::Hacer("picha"), l("mandar y recibir", "send and receive")));
+        compus.push(abre("picha", "picha".into(), Abre::Hacer("picha".into()), l("mandar y recibir", "send and receive")));
     }
     if let Some(n) = e.get("trompo") {
         let v = match n.parse::<u32>().unwrap_or(0) {
@@ -209,7 +209,7 @@ pub fn columnas(e: &Estado) -> [Vec<Seccion>; 2] {
             1 => l("1 cel · emparejar otro", "1 phone · pair another"),
             n => if es { format!("{n} cels · emparejar otro") } else { format!("{n} phones · pair another") },
         };
-        compus.push(abre("trompo", "trompo".into(), Abre::Hacer("trompo"), v));
+        compus.push(abre("trompo", "trompo".into(), Abre::Hacer("trompo".into()), v));
     }
 
     let mut der = vec![Seccion { titulo: l("sistema", "system"), renglones: sis }];
@@ -224,11 +224,77 @@ pub fn herramientas(e: &Estado) -> Vec<(String, Abre)> {
     let es = e.es();
     let l = |a: &str, b: &str| if es { a.to_string() } else { b.to_string() };
     vec![
-        (l("grabador", "recorder"), Abre::Menu("rec")),
-        (l("tu semana", "your week"), Abre::Hacer("semana")),
-        (l("atajos", "shortcuts"), Abre::Hacer("atajos")),
-        (l("editar config", "edit config"), Abre::Menu("edit")),
-        (l("audio y red", "audio & network"), Abre::Menu("tools")),
-        (l("actualizar", "update"), Abre::Hacer("update")),
+        (l("grabador", "recorder"), Abre::Pagina("rec".into())),
+        (l("tu semana", "your week"), Abre::Hacer("semana".into())),
+        (l("atajos", "shortcuts"), Abre::Hacer("atajos".into())),
+        (l("editar config", "edit config"), Abre::Pagina("edit".into())),
+        (l("audio y red", "audio & network"), Abre::Pagina("tools".into())),
+        (l("actualizar", "update"), Abre::Hacer("update".into())),
     ]
+}
+
+// ─── las páginas (los submenús, dentro del panel) ───────────────────────────
+
+#[derive(Clone, PartialEq)]
+pub enum Entrada {
+    /// opción ‹ ›, interruptor o algo que se abre
+    R(Renglon),
+    /// un renglón de una lista donde se queda uno (● el de ahora)
+    Elige { clave: String, v: String, etiqueta: String, actual: bool },
+    /// botones que se aplican y ya (no se sabe cuál está puesto)
+    Botones { clave: String, nombre: String, opts: Vec<(String, String)> },
+}
+
+#[derive(Clone, PartialEq, Default)]
+pub struct Sub {
+    pub nombre: String,
+    pub titulo: String,
+    pub nota: String,
+    pub entradas: Vec<Entrada>,
+}
+
+impl Sub {
+    /// `QuickSettings.sh pagina NOMBRE` (ver el formato allá).
+    pub fn leer(nombre: &str) -> Sub {
+        let out = Command::new(qs()).args(["pagina", nombre]).env("PATH", path()).output();
+        let text = out.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+        let mut s = Sub { nombre: nombre.into(), titulo: nombre.into(), ..Default::default() };
+        // opción → (índice de su entrada, valor de ahora); sus valores llegan después
+        let mut actuales: Vec<(usize, String)> = Vec::new();
+        for l in text.lines() {
+            let p: Vec<&str> = l.split('\t').collect();
+            let c = |i: usize| p.get(i).copied().unwrap_or("").to_string();
+            match p.first().copied() {
+                Some("titulo") => s.titulo = c(1),
+                Some("nota") => s.nota = c(1),
+                Some("opcion") => {
+                    actuales.push((s.entradas.len(), c(3)));
+                    s.entradas.push(Entrada::R(Renglon { clave: c(1), nombre: c(2), tipo: Tipo::Opcion { opts: vec![], cur: 0 }, valor: String::new() }));
+                }
+                Some("interruptor") => s.entradas.push(Entrada::R(Renglon { clave: c(1), nombre: c(2), tipo: Tipo::Interruptor(c(3) == "yes"), valor: String::new() })),
+                Some("abre") => s.entradas.push(Entrada::R(Renglon { clave: c(1), nombre: c(2), tipo: Tipo::Abre(Abre::Hacer(c(1))), valor: c(3) })),
+                Some("elige") => s.entradas.push(Entrada::Elige { clave: c(1), v: c(2), etiqueta: c(3), actual: c(4) == "1" }),
+                Some("boton") => s.entradas.push(Entrada::Botones { clave: c(1), nombre: c(3), opts: vec![(c(2), c(3))] }),
+                Some("botones") => s.entradas.push(Entrada::Botones { clave: c(1), nombre: c(2), opts: vec![] }),
+                Some("valor") => {
+                    let (clave, v, lab) = (c(1), c(2), c(3));
+                    // a la última opción o fila de botones con esa clave
+                    let destino = s.entradas.iter_mut().rev().find_map(|e| match e {
+                        Entrada::R(Renglon { clave: k, tipo: Tipo::Opcion { opts, .. }, .. }) | Entrada::Botones { clave: k, opts, .. } if *k == clave => Some(opts),
+                        _ => None,
+                    });
+                    if let Some(opts) = destino {
+                        opts.push((v, lab));
+                    }
+                }
+                _ => {}
+            }
+        }
+        for (i, v) in actuales {
+            if let Some(Entrada::R(Renglon { tipo: Tipo::Opcion { opts, cur }, .. })) = s.entradas.get_mut(i) {
+                *cur = opts.iter().position(|(o, _)| *o == v).unwrap_or(0);
+            }
+        }
+        s
+    }
 }

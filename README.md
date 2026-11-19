@@ -17,9 +17,11 @@ abajo         grabador, tu semana, atajos, editar config, audio y red, actualiza
 - clic en ‹ ›, o la rueda del mouse sobre un renglón, también cambian el valor
 - `machaca` otra vez, o un clic fuera del panel, lo cierra
 - la página de looks enseña la paleta de los looks de colores fijos; Enter lo pone
+- los submenús (visualizador, grabador, teclado, batería, editar config, audio y
+  red) son páginas del panel, con el mismo estilo; Esc regresa
 
 Es solo la cara: lo que se lee y se cambia lo hace `QuickSettings.sh` de discada
-(`estado`, `hacer CLAVE [VALOR]`, `menu NOMBRE`), así la lógica no se duplica y el
+(`estado`, `pagina NOMBRE`, `hacer CLAVE [VALOR]`), así la lógica no se duplica y el
 menú viejo de jale sigue funcionando (`QuickSettings.sh lista`).
 
 Se dibuja en celdas, como rola o vato, y [disco](https://github.com/daniiiqa/disco)
