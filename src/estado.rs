@@ -195,6 +195,9 @@ pub fn columnas(e: &Estado) -> [Vec<Seccion>; 2] {
     if let Some(b) = e.label("bateria") {
         sis.push(abre("bateria", l("batería", "battery"), Abre::Pagina("bateria".into()), b));
     }
+    if let Some(t) = e.label("trackpad") {
+        sis.push(abre("trackpad", "trackpad".into(), Abre::Pagina("trackpad".into()), t));
+    }
 
     let mut compus = Vec::new();
     if let Some(m) = e.label("machin") {
