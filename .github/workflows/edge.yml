@@ -25,7 +25,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # machaca no enlaza nada raro del sistema: Wayland y fuentes van en Rust
+      # machaca enlaza libxkbcommon (el teclado, vía smithay-client-toolkit)
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq pkg-config libxkbcommon-dev libwayland-dev
       - run: cargo build --release --locked
       - name: armar
         run: |
