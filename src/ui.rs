@@ -55,6 +55,8 @@ pub struct Ui {
     pub zona: Zona,
     pub idx: usize,
     pub look_idx: usize,
+    /// cambiando el valor del renglón elegido con ←→ (se entra con Enter)
+    pub editando: bool,
 }
 
 /// Los renglones elegibles de una columna, en orden.
@@ -109,7 +111,17 @@ impl Ui {
         let maquina = self.estado.get("maquina").unwrap_or("discada").to_string();
         look.block(false)
             .title(format!(" discada · {maquina} ").fg(t.muted))
-            .title_bottom(format!(" {} ", self.l("↑↓ elegir · ←→ cambiar · Enter abrir · Esc cerrar", "↑↓ move · ←→ change · Enter open · Esc close")).fg(t.muted))
+            .title_bottom(
+                format!(
+                    " {} ",
+                    if self.editando {
+                        self.l("←→ cambiar el valor · Enter o Esc listo", "←→ change the value · Enter or Esc done")
+                    } else {
+                        self.l("↑↓←→ elegir · Enter abrir o cambiar · Esc cerrar", "↑↓←→ move · Enter open or change · Esc close")
+                    }
+                )
+                .fg(if self.editando { t.accent } else { t.muted }),
+            )
             .render(area, &mut buf);
         let mut areas = Vec::new();
         let muted = Style::new().fg(t.muted);
@@ -212,16 +224,21 @@ impl Ui {
         put(buf, x0 + 2, y, &look.tx(&r.nombre), nombre_st);
         areas.push(Area { r: fila, hit: Hit::Renglon(c, i) });
         let fin = x0 + COL_W - 1;
-        let val_st = if elegido { sel_st } else { Style::new().fg(t.fg) };
-        let flecha = Style::new().fg(if elegido { t.accent } else { t.muted });
+        let editando = elegido && self.editando;
+        // editando: el valor al revés de la selección (oscuro si la selección es clara
+        // y al revés), así se nota en todos los looks
+        let negativo = if matches!(sel_st.bg, Some(c) if c == t.fg || c == t.primary) { Style::new().bg(t.base).fg(t.fg) } else { Style::new().bg(t.fg).fg(t.base) };
+        let val_st = if editando { negativo.add_modifier(Modifier::BOLD) } else if elegido { sel_st } else { Style::new().fg(t.fg) };
+        let flecha = if editando { sel_st.add_modifier(Modifier::BOLD) } else { Style::new().fg(if elegido { t.accent } else { t.muted }) };
+        let (izq, der) = if editando { ("◂", "▸") } else { ("‹", "›") };
         match &r.tipo {
             Tipo::Opcion { opts, cur } => {
                 let txt = trunc(&opts.get(*cur).map(|o| o.1.clone()).unwrap_or_default(), (COL_W / 2) as usize);
                 let w = txt.chars().count() as u16;
                 let xs = fin - w - 3;
-                put(buf, xs - 1, y, "‹", flecha);
-                put(buf, xs + 1, y, &txt, val_st);
-                put(buf, fin - 1, y, "›", flecha);
+                put(buf, xs - 1, y, izq, flecha);
+                put(buf, xs, y, &format!(" {txt} "), val_st);
+                put(buf, fin - 1, y, der, flecha);
                 areas.push(Area { r: Rect::new(xs - 2, y, 3, 1), hit: Hit::Menos(c, i) });
                 areas.push(Area { r: Rect::new(fin - 2, y, 3, 1), hit: Hit::Mas(c, i) });
             }
@@ -230,11 +247,11 @@ impl Ui {
                 let (lleno, resto) = look.bar(frac, 10);
                 let num = if *cur > 0 { format!("+{cur}") } else { cur.to_string() };
                 let xs = fin - 10 - 2 - 4;
-                put(buf, xs - 1, y, "‹", flecha);
+                put(buf, xs - 1, y, izq, flecha);
                 let nx = put(buf, xs + 1, y, &lleno, Style::new().fg(t.primary));
                 put(buf, nx, y, &resto, Style::new().fg(t.border));
-                put(buf, xs + 12, y, &format!("{num:>2}"), val_st);
-                put(buf, fin - 1, y, "›", flecha);
+                put(buf, xs + 11, y, &format!(" {num:>2} "), val_st);
+                put(buf, fin - 1, y, der, flecha);
                 areas.push(Area { r: Rect::new(xs - 2, y, 3, 1), hit: Hit::Menos(c, i) });
                 areas.push(Area { r: Rect::new(fin - 2, y, 3, 1), hit: Hit::Mas(c, i) });
             }

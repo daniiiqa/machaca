@@ -254,11 +254,36 @@ impl App {
         let n_col = |c: usize| renglones(&cols, c).len();
         let n_herr = herramientas(&self.ui.estado).len();
         let (zona, idx) = (self.ui.zona, self.ui.idx);
+        // editando un valor: ←→ lo cambian; Enter o Esc terminan; ↑↓ terminan y siguen
+        if self.ui.editando {
+            match k {
+                Keysym::Left | Keysym::h | Keysym::Right | Keysym::l => {
+                    if let Zona::Col(c) = zona {
+                        return self.cambiar(c, idx, if matches!(k, Keysym::Left | Keysym::h) { -1 } else { 1 });
+                    }
+                }
+                Keysym::Escape | Keysym::Return | Keysym::KP_Enter | Keysym::space => {
+                    self.ui.editando = false;
+                    return self.redraw();
+                }
+                Keysym::Up | Keysym::k | Keysym::Down | Keysym::j | Keysym::Tab => self.ui.editando = false,
+                _ => return,
+            }
+        }
         match k {
             Keysym::Escape => return self.cerrar(),
             Keysym::Return | Keysym::KP_Enter | Keysym::space => {
                 return match zona {
-                    Zona::Col(c) => self.activar(c, idx),
+                    Zona::Col(c) => {
+                        // las opciones y la barra se editan con ←→; lo demás se hace ya
+                        let editable = renglones(&cols, c).get(idx).is_some_and(|r| matches!(r.tipo, Tipo::Opcion { .. } | Tipo::Barra { .. }));
+                        if editable {
+                            self.ui.editando = true;
+                            self.redraw();
+                        } else {
+                            self.activar(c, idx);
+                        }
+                    }
                     Zona::Herr => self.herramienta(idx),
                 };
             }
@@ -290,10 +315,6 @@ impl App {
                 match zona {
                     Zona::Herr => self.ui.idx = (idx as i32 + d).rem_euclid(n_herr as i32) as usize,
                     Zona::Col(c) => {
-                        let ajustable = renglones(&cols, c).get(idx).is_some_and(|r| matches!(r.tipo, Tipo::Opcion { .. } | Tipo::Barra { .. } | Tipo::Interruptor(_)));
-                        if ajustable {
-                            return self.cambiar(c, idx, d);
-                        }
                         let otra = 1 - c;
                         self.ui.zona = Zona::Col(otra);
                         self.ui.idx = idx.min(n_col(otra).saturating_sub(1));
@@ -375,6 +396,7 @@ impl App {
             _ => {}
         }
         if antes != (self.ui.zona, self.ui.idx, self.ui.look_idx) {
+            self.ui.editando = false;
             self.redraw();
         }
     }
@@ -730,7 +752,7 @@ pub fn run(sigs: libc::sigset_t) -> Result<(), String> {
         keyboard: None,
         look: Look::load("machaca"),
         painter,
-        ui: Ui { estado: estado0, looks: looks0, pagina: Pagina::Panel, zona: Zona::Col(0), idx: 0, look_idx: 0 },
+        ui: Ui { estado: estado0, looks: looks0, pagina: Pagina::Panel, zona: Zona::Col(0), idx: 0, look_idx: 0, editando: false },
         miniatura: None,
         areas: Vec::new(),
         caja: (0.0, 0.0, 0.0, 0.0),

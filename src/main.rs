@@ -9,7 +9,8 @@
 //!   abajo         grabador, tu semana, atajos, editar config, audio y red,
 //!                 actualizar
 //!
-//!   ↑↓ / jk elegir · ←→ / hl cambiar el valor · Enter abrir · Esc cerrar
+//!   ↑↓←→ / hjkl elegir · Enter abrir, prender/apagar, o editar un valor
+//!   (editando: ←→ lo cambian, Enter o Esc listo) · Esc cerrar
 //!   clic en ‹ › o la rueda del mouse también cambian el valor
 //!   `machaca` otra vez (o clic fuera) cierra
 //!

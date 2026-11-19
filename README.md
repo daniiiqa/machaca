@@ -12,7 +12,8 @@ Tus compus    machín, picha, trompo
 abajo         grabador, tu semana, atajos, editar config, audio y red, actualizar
 ```
 
-- ↑↓ / jk elegir · ←→ / hl cambiar el valor · Enter abrir · Esc cerrar
+- ↑↓←→ / hjkl elegir · Enter abre, prende/apaga, o edita un valor (editando: ←→
+  lo cambian, Enter o Esc listo) · Esc cerrar
 - clic en ‹ ›, o la rueda del mouse sobre un renglón, también cambian el valor
 - `machaca` otra vez, o un clic fuera del panel, lo cierra
 - la página de looks enseña la paleta de los looks de colores fijos; Enter lo pone
