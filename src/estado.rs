@@ -181,6 +181,10 @@ pub fn columnas(e: &Estado) -> [Vec<Seccion>; 2] {
     ap.extend(opcion(e, "fetch", "cacha".into()));
     ap.push(abre("vis", l("visualizador", "visualizer"), Abre::Pagina("vis".into()), e.label("vis").unwrap_or("")));
     ap.extend(opcion(e, "entrada", l("entrada", "entrance")));
+    // la dalia de letras de fondo (si está instalada): su página
+    if let Some(m) = e.label("maceta") {
+        ap.push(abre("maceta", "maceta".into(), Abre::Pagina("maceta".into()), m));
+    }
 
     let mut sis = Vec::new();
     sis.extend(opcion(e, "lang", l("idioma", "language")));
